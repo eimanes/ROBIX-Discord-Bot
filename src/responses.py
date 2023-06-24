@@ -1,38 +1,51 @@
-from revChatGPT.V1 import AsyncChatbot
-from revChatGPT.V3 import Chatbot
-from dotenv import load_dotenv
-from typing import Union
+import json
 
-import os
+from src import log
+from src import personas
+from asgiref.sync import sync_to_async
+from EdgeGPT.EdgeGPT import ConversationStyle
 
-load_dotenv()
-OPENAI_EMAIL = os.getenv("OPENAI_EMAIL")
-OPENAI_PASSWORD = os.getenv("OPENAI_PASSWORD")
-SESSION_TOKEN = os.getenv("SESSION_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ENGINE = os.getenv("OPENAI_ENGINE")
-CHAT_MODEL = os.getenv("CHAT_MODEL")
+logger = log.setup_logger(__name__)
 
+async def official_handle_response(message, client) -> str:
+    return await sync_to_async(client.chatbot.ask)(message)
 
-def get_chatbot_model(model_name: str) -> Union[AsyncChatbot, Chatbot]:
-    if model_name == "UNOFFICIAL":
-        openai_email = os.getenv("OPENAI_EMAIL")
-        openai_password = os.getenv("OPENAI_PASSWORD")
-        session_token = os.getenv("SESSION_TOKEN")
-        return AsyncChatbot(config={"email": openai_email, "password": openai_password, "session_token": session_token})
-    elif model_name == "OFFICIAL":
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        print(openai_api_key)
-        engine = os.getenv("OPENAI_ENGINE")
-        return Chatbot(api_key=openai_api_key, engine=engine)
-
-chatbot = get_chatbot_model(CHAT_MODEL)
-
-async def official_handle_response(message) -> str:
-    return chatbot.ask(message)
-
-async def unofficial_handle_response(message) -> str:
-    async for response in chatbot.ask(message):
+async def unofficial_handle_response(message, client) -> str:
+    async for response in client.chatbot.ask(message):
         responseMessage = response["message"]
+    return responseMessage
+
+async def bard_handle_response(message, client) -> str:
+    response = await sync_to_async(client.chatbot.ask)(message)
+    responseMessage = response["content"]
+    return responseMessage
+
+async def bing_handle_response(message, client, conversation_style = ConversationStyle.creative) -> str:
+    try:
+        response = await client.chatbot.ask(prompt = message,
+                                            conversation_style = conversation_style,
+                                            simplify_response = True)
+        responseMessage = response['text']
+    except Exception as e:
+        logger.error(f'Error occurred: {e}')
+        await client.chatbot.reset()
+        raise Exception("Bing is fail to continue the conversation, this conversation will automatically reset.")
 
     return responseMessage
+
+
+# prompt engineering
+async def switch_persona(persona, client) -> None:
+    if client.chat_model ==  "UNOFFICIAL":
+        client.chatbot.reset_chat()
+        async for _ in client.chatbot.ask(personas.PERSONAS.get(persona)):
+            pass
+    elif client.chat_model == "OFFICIAL":
+        client.chatbot = client.get_chatbot_model(prompt=personas.PERSONAS.get(persona))
+    elif client.chat_model == "Bard":
+        client.chatbot = client.get_chatbot_model()
+        await sync_to_async(client.chatbot.ask)(personas.PERSONAS.get(persona))
+    elif client.chat_model == "Bing":
+        await client.chatbot.reset()
+        async for _ in client.chatbot.ask_stream(personas.PERSONAS.get(persona)):
+            pass
